@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CheckCircle2, AlertTriangle, Lightbulb, ChevronDown, ChevronUp, Sparkles, MessageSquare, Code2, Award } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, Lightbulb, ChevronDown, ChevronUp, Sparkles, Award } from 'lucide-react';
 import { AnswerEvaluation } from '../types';
 import { ScoreGauge } from './ScoreGauge';
 
@@ -19,6 +19,9 @@ export const FeedbackCard: React.FC<FeedbackCardProps> = ({
   isLastQuestion,
 }) => {
   const [showIdealAnswer, setShowIdealAnswer] = useState(true);
+
+  const strengthsList = evaluation.whatWasGood || [];
+  const missingList = evaluation.whatWasMissing || [];
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5 backdrop-blur-md shadow-2xl space-y-5 animate-in fade-in slide-in-from-bottom-3 duration-300">
@@ -63,10 +66,10 @@ export const FeedbackCard: React.FC<FeedbackCardProps> = ({
         <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
           <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 mb-2">
             <CheckCircle2 className="h-4 w-4" />
-            <span>Strengths & Positive Highlights</span>
+            <span>What Was Good</span>
           </div>
           <ul className="space-y-1.5 text-xs text-slate-300">
-            {evaluation.strengths.map((str, idx) => (
+            {strengthsList.map((str, idx) => (
               <li key={idx} className="flex items-start gap-2">
                 <span className="text-emerald-400 font-bold">•</span>
                 <span>{str}</span>
@@ -79,10 +82,10 @@ export const FeedbackCard: React.FC<FeedbackCardProps> = ({
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
           <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 mb-2">
             <AlertTriangle className="h-4 w-4" />
-            <span>Gaps & Areas for Improvement</span>
+            <span>What Was Missing</span>
           </div>
           <ul className="space-y-1.5 text-xs text-slate-300">
-            {evaluation.areasToImprove.map((gap, idx) => (
+            {missingList.map((gap, idx) => (
               <li key={idx} className="flex items-start gap-2">
                 <span className="text-amber-400 font-bold">•</span>
                 <span>{gap}</span>
@@ -92,13 +95,13 @@ export const FeedbackCard: React.FC<FeedbackCardProps> = ({
         </div>
       </div>
 
-      {/* Key Takeaway Banner */}
-      {evaluation.keyTakeaway && (
+      {/* Key Improvement Tip */}
+      {evaluation.suggestedImprovement && (
         <div className="flex items-start gap-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-3.5 text-xs text-cyan-200">
           <Lightbulb className="h-5 w-5 shrink-0 text-cyan-400 mt-0.5" />
           <div>
-            <span className="font-bold block text-cyan-300 mb-0.5">Key Pro Tip:</span>
-            <p className="leading-relaxed">{evaluation.keyTakeaway}</p>
+            <span className="font-bold block text-cyan-300 mb-0.5">Suggested Improvement:</span>
+            <p className="leading-relaxed">{evaluation.suggestedImprovement}</p>
           </div>
         </div>
       )}
@@ -111,7 +114,7 @@ export const FeedbackCard: React.FC<FeedbackCardProps> = ({
         >
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-violet-400" />
-            <span>Model Answer (What a Top Candidate Would Say)</span>
+            <span>Benchmark Model Answer</span>
           </div>
           {showIdealAnswer ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
         </button>

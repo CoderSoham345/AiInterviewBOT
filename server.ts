@@ -14,7 +14,6 @@ async function startServer() {
   // Middleware
   app.use(express.json({ limit: "25mb" }));
 
-  // Helper to initialize Gemini SDK safely
   function getGeminiClient() {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -30,112 +29,220 @@ async function startServer() {
     });
   }
 
-  // API 1: Parse Resume
+  // 1. Resume Parsing Helper
+  async function extractTextFromPayload(reqBody: any): Promise<string> {
+    const { fileBase64, fileName, mimeType, rawText } = reqBody;
+    if (rawText && rawText.trim().length > 0) return rawText;
+    if (!fileBase64) return "";
+
+    const buffer = Buffer.from(fileBase64, "base64");
+    if (mimeType === "application/pdf" || fileName?.endsWith(".pdf")) {
+      try {
+        const pdfData = await pdfParse(buffer);
+        return pdfData.text || buffer.toString("utf-8");
+      } catch (err) {
+        return buffer.toString("utf-8");
+      }
+    } else if (
+      mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      fileName?.endsWith(".docx")
+    ) {
+      try {
+        const docResult = await mammoth.extractRawText({ buffer });
+        return docResult.value || buffer.toString("utf-8");
+      } catch (err) {
+        return buffer.toString("utf-8");
+      }
+    }
+    return buffer.toString("utf-8");
+  }
+
+  // Quick Resume Parse
   app.post("/api/resume/parse", async (req, res) => {
     try {
-      const { fileBase64, fileName, mimeType, rawText } = req.body;
-      let extractedText = rawText || "";
-
-      if (!extractedText && fileBase64) {
-        const buffer = Buffer.from(fileBase64, "base64");
-        
-        if (mimeType === "application/pdf" || fileName?.endsWith(".pdf")) {
-          try {
-            const pdfData = await pdfParse(buffer);
-            extractedText = pdfData.text || "";
-          } catch (pdfErr) {
-            console.warn("pdf-parse fallback, using raw string representation", pdfErr);
-            extractedText = buffer.toString("utf-8");
-          }
-        } else if (
-          mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-          fileName?.endsWith(".docx")
-        ) {
-          try {
-            const docResult = await mammoth.extractRawText({ buffer });
-            extractedText = docResult.value || "";
-          } catch (docErr) {
-            console.warn("docx-parse fallback", docErr);
-            extractedText = buffer.toString("utf-8");
-          }
-        } else {
-          extractedText = buffer.toString("utf-8");
-        }
-      }
-
+      const extractedText = await extractTextFromPayload(req.body);
       if (!extractedText || extractedText.trim().length < 10) {
-        return res.status(400).json({
-          error: "Could not extract meaningful text from file. Please paste or try another document.",
-        });
+        return res.status(400).json({ error: "Could not extract text from document." });
       }
 
-      // Use Gemini to structure resume insights
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: "gemini-3.6-flash",
-        contents: `Analyze this candidate resume text and extract key summary information in JSON format:
-        
-        RESUME TEXT:
+        contents: `Analyze this candidate resume and extract summary data:
+        RESUME:
         ${extractedText.slice(0, 15000)}`,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              summary: { type: Type.STRING, description: "Professional 2-3 sentence overview" },
-              topSkills: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "List of top 6-10 technical and soft skills",
-              },
-              experienceYears: { type: Type.STRING, description: "Estimated experience level (e.g. 3 years)" },
-              highlights: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "Key achievements, past companies, or notable projects",
-              },
+              summary: { type: Type.STRING },
+              topSkills: { type: Type.ARRAY, items: { type: Type.STRING } },
+              experienceYears: { type: Type.STRING },
+              highlights: { type: Type.ARRAY, items: { type: Type.STRING } },
+              resumeScore: { type: Type.INTEGER, description: "0 to 100 resume quality score" },
+              atsScore: { type: Type.INTEGER, description: "0 to 100 default ATS readability score" },
             },
-            required: ["summary", "topSkills", "experienceYears", "highlights"],
+            required: ["summary", "topSkills", "experienceYears", "highlights", "resumeScore", "atsScore"],
           },
         },
       });
 
-      let parsedInsight = { summary: "", topSkills: [], experienceYears: "Unspecified", highlights: [] };
-      try {
-        if (response.text) {
-          parsedInsight = JSON.parse(response.text);
-        }
-      } catch (e) {
-        console.error("JSON parse error for resume insights", e);
+      let parsedInsight = {};
+      if (response.text) {
+        parsedInsight = JSON.parse(response.text);
       }
 
       res.json({
         text: extractedText,
-        fileName: fileName || "Resume.pdf",
+        fileName: req.body.fileName || "Uploaded_Resume.pdf",
         ...parsedInsight,
       });
     } catch (error: any) {
       console.error("Error parsing resume:", error);
-      res.status(500).json({ error: error.message || "Failed to process resume file" });
+      res.status(500).json({ error: error.message || "Failed to process resume" });
     }
   });
 
-  // API 2: Generate Questions
-  app.post("/api/interview/generate-questions", async (req, res) => {
+  // Deep Resume Analysis
+  app.post("/api/resume/full-analysis", async (req, res) => {
     try {
-      const { role, customRole, experienceLevel, interviewMode, resumeText, count = 5 } = req.body;
-      const targetRole = role === "Custom" ? customRole || "Software Engineer" : role;
+      const extractedText = await extractTextFromPayload(req.body);
+      if (!extractedText || extractedText.trim().length < 10) {
+        return res.status(400).json({ error: "No resume text provided." });
+      }
 
       const ai = getGeminiClient();
-      const prompt = `You are an expert tech interviewer hiring for a ${experienceLevel} ${targetRole} role.
-      ${interviewMode ? `Interview Focus: ${interviewMode}.` : ""}
+      const response = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: `Conduct a deep professional resume audit for a candidate:
+        RESUME TEXT:
+        ${extractedText.slice(0, 18000)}`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              summary: { type: Type.STRING },
+              resumeScore: { type: Type.INTEGER },
+              atsScore: { type: Type.INTEGER },
+              topSkills: { type: Type.ARRAY, items: { type: Type.STRING } },
+              experienceYears: { type: Type.STRING },
+              projects: { type: Type.ARRAY, items: { type: Type.STRING } },
+              education: { type: Type.ARRAY, items: { type: Type.STRING } },
+              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+              weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+              missingSkills: { type: Type.ARRAY, items: { type: Type.STRING } },
+              recommendedImprovements: { type: Type.ARRAY, items: { type: Type.STRING } },
+            },
+            required: [
+              "summary",
+              "resumeScore",
+              "atsScore",
+              "topSkills",
+              "experienceYears",
+              "projects",
+              "education",
+              "strengths",
+              "weaknesses",
+              "missingSkills",
+              "recommendedImprovements",
+            ],
+          },
+        },
+      });
+
+      let fullAnalysis = {};
+      if (response.text) {
+        fullAnalysis = JSON.parse(response.text);
+      }
+
+      res.json({
+        text: extractedText,
+        fileName: req.body.fileName || "Resume.pdf",
+        ...fullAnalysis,
+      });
+    } catch (error: any) {
+      console.error("Error in full resume analysis:", error);
+      res.status(500).json({ error: error.message || "Failed to perform resume analysis" });
+    }
+  });
+
+  // ATS Checker
+  app.post("/api/ats/check", async (req, res) => {
+    try {
+      const { resumeText, jobDescription } = req.body;
+      if (!resumeText || !jobDescription) {
+        return res.status(400).json({ error: "Both resume text and job description are required." });
+      }
+
+      const ai = getGeminiClient();
+      const response = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: `Act as an expert ATS (Applicant Tracking System) Scanner & Hiring Manager. Compare the candidate's resume against the Job Description.
+
+        CANDIDATE RESUME:
+        ${resumeText.slice(0, 15000)}
+
+        TARGET JOB DESCRIPTION:
+        ${jobDescription.slice(0, 10000)}`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              atsScore: { type: Type.INTEGER, description: "Overall ATS match score 0-100" },
+              formattingScore: { type: Type.INTEGER },
+              experienceMatchScore: { type: Type.INTEGER },
+              educationMatchScore: { type: Type.INTEGER },
+              matchedKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+              missingKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+              formattingFeedback: { type: Type.ARRAY, items: { type: Type.STRING } },
+              experienceMatchSummary: { type: Type.STRING },
+              improvedResumeRecommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
+            },
+            required: [
+              "atsScore",
+              "formattingScore",
+              "experienceMatchScore",
+              "educationMatchScore",
+              "matchedKeywords",
+              "missingKeywords",
+              "formattingFeedback",
+              "experienceMatchSummary",
+              "improvedResumeRecommendations",
+            ],
+          },
+        },
+      });
+
+      let atsResult = {};
+      if (response.text) {
+        atsResult = JSON.parse(response.text);
+      }
+
+      res.json(atsResult);
+    } catch (error: any) {
+      console.error("Error in ATS check:", error);
+      res.status(500).json({ error: error.message || "Failed to run ATS scanner" });
+    }
+  });
+
+  // Questions Generator
+  app.post("/api/interview/generate-questions", async (req, res) => {
+    try {
+      const { role, experienceLevel, difficulty, interviewMode, resumeText, count = 5 } = req.body;
+
+      const ai = getGeminiClient();
+      const prompt = `You are an elite Lead Interviewer conducting a ${interviewMode || 'Technical'} interview for a ${experienceLevel} ${role} position.
+      Difficulty Setting: ${difficulty || 'Medium'}.
       
       Candidate Resume Context:
-      ${resumeText ? resumeText.slice(0, 6000) : "No resume provided."}
+      ${resumeText ? resumeText.slice(0, 8000) : "No resume attached."}
 
-      Generate ${count} realistic, challenging, and highly relevant mock interview questions for this target role and experience level.
-      Blend questions that probe both technical expertise, domain knowledge, real-world scenario solving, and resume achievements if available.
-      Make each question distinct, realistic, and clear.`;
+      Generate ${count} realistic interview questions.
+      Ensure questions start accessible and progressively build in depth and difficulty.
+      Mix conceptual understanding, real-world scenario handling, trade-offs, and resume-specific deep dives if applicable.`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.6-flash",
@@ -148,12 +255,13 @@ async function startServer() {
               type: Type.OBJECT,
               properties: {
                 id: { type: Type.INTEGER },
-                question: { type: Type.STRING, description: "The interview question text" },
-                category: { type: Type.STRING, description: "Technical, Behavioral, System Design, or Resume Specific" },
-                conceptTested: { type: Type.STRING, description: "The core skill or concept tested" },
-                contextHint: { type: Type.STRING, description: "A subtle guidance hint if candidate gets stuck" },
+                question: { type: Type.STRING },
+                category: { type: Type.STRING },
+                conceptTested: { type: Type.STRING },
+                difficulty: { type: Type.STRING, description: "Easy, Medium, or Hard" },
+                contextHint: { type: Type.STRING },
               },
-              required: ["id", "question", "category", "conceptTested"],
+              required: ["id", "question", "category", "conceptTested", "difficulty"],
             },
           },
         },
@@ -167,44 +275,41 @@ async function startServer() {
       res.json({ questions });
     } catch (error: any) {
       console.error("Error generating questions:", error);
-      res.status(500).json({ error: error.message || "Failed to generate interview questions" });
+      res.status(500).json({ error: error.message || "Failed to generate questions" });
     }
   });
 
-  // API 3: Evaluate Answer
+  // Evaluate Single Answer
   app.post("/api/interview/evaluate-answer", async (req, res) => {
     try {
-      const { questionId, questionText, userAnswer, role, customRole, experienceLevel, resumeText } = req.body;
-      const targetRole = role === "Custom" ? customRole || "Software Engineer" : role;
+      const { questionId, questionText, userAnswer, role, experienceLevel, resumeText } = req.body;
 
       if (!userAnswer || userAnswer.trim().length === 0) {
-        return res.status(400).json({ error: "Candidate response cannot be empty." });
+        return res.status(400).json({ error: "Answer cannot be empty." });
       }
 
       const ai = getGeminiClient();
-      const prompt = `You are a tough but constructive Lead Interviewer assessing a ${experienceLevel} ${targetRole} candidate.
+      const prompt = `You are a Principal Bar Raiser evaluating a candidate's response in a ${experienceLevel} ${role} interview.
       
-      QUESTION:
-      "${questionText}"
+      QUESTION: "${questionText}"
+      CANDIDATE ANSWER: "${userAnswer}"
       
-      CANDIDATE'S ANSWER:
-      "${userAnswer}"
-      
-      Candidate Resume Context (for grounding):
-      ${resumeText ? resumeText.slice(0, 3000) : "N/A"}
+      Resume Context: ${resumeText ? resumeText.slice(0, 3000) : "N/A"}
 
-      Evaluate the candidate's answer thoroughly and quantitatively.
-      Provide scores from 0 to 100 for:
-      - Confidence Score (assertiveness, clarity, structural delivery, lack of excessive filler/uncertainty)
-      - Technical Score (accuracy, depth, best practices, edge cases handled)
-      - Communication Score (structure, conciseness, articulation, logical flow)
-      - Overall Score (weighted composite of overall performance on this question)
+      Evaluate the response across all 6 core dimensions (scores 0-100):
+      1. Confidence Score
+      2. Technical Score
+      3. Communication Score
+      4. Problem Solving Score
+      5. Behavioural Score
+      6. Overall Score
 
       Also provide:
-      - strengths: 2-3 specific positive aspects of their answer
-      - areasToImprove: 2-3 specific gaps, inaccuracies, or missing details
-      - idealAnswer: A exemplary model answer (2-4 paragraphs or concise code/explanation) showing what a top 5% candidate would say
-      - keyTakeaway: One single memorable piece of advice for this question`;
+      - whatWasGood: 2-3 specific bullet points of praise
+      - whatWasMissing: 2-3 specific missing technical points or nuances
+      - idealAnswer: A benchmark top 5% candidate response
+      - suggestedImprovement: Concrete 2-3 sentence tip on how to restructure or deepen this answer
+      - learningResources: Array of 2 relevant topics/resources with title and description`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.6-flash",
@@ -217,21 +322,37 @@ async function startServer() {
               confidenceScore: { type: Type.INTEGER },
               technicalScore: { type: Type.INTEGER },
               communicationScore: { type: Type.INTEGER },
+              problemSolvingScore: { type: Type.INTEGER },
+              behaviouralScore: { type: Type.INTEGER },
               overallScore: { type: Type.INTEGER },
-              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
-              areasToImprove: { type: Type.ARRAY, items: { type: Type.STRING } },
+              whatWasGood: { type: Type.ARRAY, items: { type: Type.STRING } },
+              whatWasMissing: { type: Type.ARRAY, items: { type: Type.STRING } },
               idealAnswer: { type: Type.STRING },
-              keyTakeaway: { type: Type.STRING },
+              suggestedImprovement: { type: Type.STRING },
+              learningResources: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    description: { type: Type.STRING },
+                  },
+                  required: ["title", "description"],
+                },
+              },
             },
             required: [
               "confidenceScore",
               "technicalScore",
               "communicationScore",
+              "problemSolvingScore",
+              "behaviouralScore",
               "overallScore",
-              "strengths",
-              "areasToImprove",
+              "whatWasGood",
+              "whatWasMissing",
               "idealAnswer",
-              "keyTakeaway",
+              "suggestedImprovement",
+              "learningResources",
             ],
           },
         },
@@ -250,29 +371,31 @@ async function startServer() {
       });
     } catch (error: any) {
       console.error("Error evaluating answer:", error);
-      res.status(500).json({ error: error.message || "Failed to evaluate candidate response" });
+      res.status(500).json({ error: error.message || "Failed to evaluate answer" });
     }
   });
 
-  // API 4: Generate Report
+  // Generate Comprehensive Interview Report
   app.post("/api/interview/generate-report", async (req, res) => {
     try {
-      const { role, customRole, experienceLevel, interviewMode, evaluations, resumeFileName } = req.body;
-      const targetRole = role === "Custom" ? customRole || "Software Engineer" : role;
+      const { role, interviewType, experienceLevel, difficulty, durationMinutes, evaluations, resumeFileName } = req.body;
 
       const ai = getGeminiClient();
-      const prompt = `You are the Principal Technical Hiring Bar Raiser compiling a final Mock Interview Evaluation Report for a ${experienceLevel} ${targetRole} candidate.
+      const prompt = `You are a Chief Talent Officer compiling the final Interview Performance Report for a ${experienceLevel} ${role} candidate (${interviewType || 'General'}).
 
-      Interview Mode: ${interviewMode || "General"}
-      Evaluated Questions & Answers:
+      EVALUATIONS HISTORY:
       ${JSON.stringify(evaluations, null, 2)}
 
-      Generate a comprehensive summary report in JSON with:
-      - executiveSummary: High-level hiring recommendation summary (e.g., "Strong Hire", "Leaning Hire", "Needs Preparation") with 3-4 sentences of context.
-      - strengthsSummary: Top 3-5 overall candidate superpowers shown across the interview.
-      - keyWeaknesses: Top 3-4 major gaps or growth areas.
-      - actionPlan: An array of 3-5 prioritized actionable learning steps with 'topic', 'description', and 'resourceOrExercise'.
-      - recommendedQuestions: 3 tailored follow-up practice questions for their next iteration.`;
+      Generate a comprehensive hiring scorecard report in JSON format including:
+      - hiringRecommendation: "Strong Hire", "Hire", "Leaning Hire", or "Needs Preparation"
+      - executiveSummary: Comprehensive 3-4 sentence hiring feedback summary
+      - strengths: Top 4 candidate strengths
+      - weaknesses: Top 4 candidate gaps/weaknesses
+      - skillGapAnalysis: Array of objects { skill, status: 'Proficient'|'Developing'|'Gap', note }
+      - improvementRoadmap: Array of 4 phases { phase: 'Week 1'|'Week 2'|'Week 3'|'Week 4', title, action }
+      - recommendedCourses: Array of 3 recommended learning courses { name, provider, url }
+      - recommendedProjects: Array of 2 hands-on practice projects { title, description, tech }
+      - nextPrepPlan: 2 sentence conclusion and next interview focus plan`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.6-flash",
@@ -282,67 +405,116 @@ async function startServer() {
           responseSchema: {
             type: Type.OBJECT,
             properties: {
+              hiringRecommendation: { type: Type.STRING },
               executiveSummary: { type: Type.STRING },
-              strengthsSummary: { type: Type.ARRAY, items: { type: Type.STRING } },
-              keyWeaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
-              actionPlan: {
+              strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
+              weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+              skillGapAnalysis: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    topic: { type: Type.STRING },
-                    description: { type: Type.STRING },
-                    resourceOrExercise: { type: Type.STRING },
+                    skill: { type: Type.STRING },
+                    status: { type: Type.STRING },
+                    note: { type: Type.STRING },
                   },
-                  required: ["topic", "description", "resourceOrExercise"],
+                  required: ["skill", "status", "note"],
                 },
               },
-              recommendedQuestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+              improvementRoadmap: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    phase: { type: Type.STRING },
+                    title: { type: Type.STRING },
+                    action: { type: Type.STRING },
+                  },
+                  required: ["phase", "title", "action"],
+                },
+              },
+              recommendedCourses: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    provider: { type: Type.STRING },
+                    url: { type: Type.STRING },
+                  },
+                  required: ["name", "provider", "url"],
+                },
+              },
+              recommendedProjects: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    description: { type: Type.STRING },
+                    tech: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  },
+                  required: ["title", "description", "tech"],
+                },
+              },
+              nextPrepPlan: { type: Type.STRING },
             },
-            required: ["executiveSummary", "strengthsSummary", "keyWeaknesses", "actionPlan", "recommendedQuestions"],
+            required: [
+              "hiringRecommendation",
+              "executiveSummary",
+              "strengths",
+              "weaknesses",
+              "skillGapAnalysis",
+              "improvementRoadmap",
+              "recommendedCourses",
+              "recommendedProjects",
+              "nextPrepPlan",
+            ],
           },
         },
       });
 
-      let reportData = {};
+      let reportDetails = {};
       if (response.text) {
-        reportData = JSON.parse(response.text);
+        reportDetails = JSON.parse(response.text);
       }
 
-      // Compute aggregates
-      let totalConfidence = 0;
-      let totalTechnical = 0;
-      let totalCommunication = 0;
-      let totalOverall = 0;
+      // Compute composite scores
+      let sumOverall = 0, sumConf = 0, sumTech = 0, sumComm = 0, sumProblem = 0, sumBehav = 0;
       const count = evaluations.length || 1;
 
       evaluations.forEach((e: any) => {
-        totalConfidence += e.confidenceScore || 0;
-        totalTechnical += e.technicalScore || 0;
-        totalCommunication += e.communicationScore || 0;
-        totalOverall += e.overallScore || 0;
+        sumOverall += e.overallScore || 0;
+        sumConf += e.confidenceScore || 0;
+        sumTech += e.technicalScore || 0;
+        sumComm += e.communicationScore || 0;
+        sumProblem += e.problemSolvingScore || 0;
+        sumBehav += e.behaviouralScore || 0;
       });
 
-      const report = {
+      const fullReport = {
         id: "rep_" + Date.now().toString(36),
         timestamp: Date.now(),
-        role: targetRole,
-        experienceLevel,
-        interviewMode,
+        role: role || "Software Engineer",
+        interviewType: interviewType || "Technical Interview",
+        experienceLevel: experienceLevel || "Mid-Level",
+        difficulty: difficulty || "Medium",
+        durationMinutes: durationMinutes || 20,
         resumeFileName,
-        overallScore: Math.round(totalOverall / count),
-        confidenceScore: Math.round(totalConfidence / count),
-        technicalScore: Math.round(totalTechnical / count),
-        communicationScore: Math.round(totalCommunication / count),
-        questionsCount: count,
+        overallScore: Math.round(sumOverall / count),
+        confidenceScore: Math.round(sumConf / count),
+        technicalScore: Math.round(sumTech / count),
+        communicationScore: Math.round(sumComm / count),
+        problemSolvingScore: Math.round(sumProblem / count),
+        behaviouralScore: Math.round(sumBehav / count),
         evaluations,
-        ...reportData,
+        ...reportDetails,
       };
 
-      res.json({ report });
+      res.json({ report: fullReport });
     } catch (error: any) {
       console.error("Error generating report:", error);
-      res.status(500).json({ error: error.message || "Failed to generate interview report" });
+      res.status(500).json({ error: error.message || "Failed to compile interview report" });
     }
   });
 
@@ -362,7 +534,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`AI Interview Coach server listening on http://0.0.0.0:${PORT}`);
   });
 }
 

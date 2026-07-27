@@ -54,14 +54,14 @@ export const RoleSelector: React.FC<RoleSelectorProps> = ({
     'Mid-Level (3-5 yrs)',
     'Senior (5+ yrs)',
     'Staff / Lead',
-  ];
+  ] as ExperienceLevel[];
 
   const modeOptions: InterviewMode[] = [
     'Mixed',
-    'Technical Deep-Dive',
-    'Behavioral (STAR)',
+    'Technical',
+    'Behavioral',
     'System Design',
-  ];
+  ] as InterviewMode[];
 
   return (
     <div className="space-y-6">
@@ -206,7 +206,7 @@ export const RoleSelector: React.FC<RoleSelectorProps> = ({
         <div className="flex items-center gap-3">
           <span className="text-xs font-bold text-slate-300 whitespace-nowrap">Session Questions:</span>
           <div className="flex gap-1.5">
-            {[3, 5, 7].map((num) => (
+            {[3, 5, 7, 10].map((num) => (
               <button
                 key={num}
                 onClick={() => setQuestionCount(num)}

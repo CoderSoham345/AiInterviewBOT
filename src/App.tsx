@@ -1,22 +1,51 @@
 import React, { useState, useEffect } from 'react';
-import { Navbar } from './components/Navbar';
-import { ResumeUploader } from './components/ResumeUploader';
-import { RoleSelector } from './components/RoleSelector';
+import { Sidebar } from './components/Sidebar';
+import { LandingPage } from './components/LandingPage';
+import { DashboardView } from './components/DashboardView';
+import { ResumeAnalysisView } from './components/ResumeAnalysisView';
+import { AtsCheckerView } from './components/AtsCheckerView';
+import { QuestionBankView } from './components/QuestionBankView';
 import { MockInterview } from './components/MockInterview';
 import { ReportView } from './components/ReportView';
 import { HistoryView } from './components/HistoryView';
-import { ResumeData, InterviewRole, ExperienceLevel, InterviewMode, InterviewQuestion, AnswerEvaluation, InterviewReport } from './types';
-import { Sparkles, Bot, ShieldCheck, Award, Zap, BookOpen, CheckCircle, ArrowRight } from 'lucide-react';
+import { ProgressTrackerView } from './components/ProgressTrackerView';
+import { SettingsView } from './components/SettingsView';
+import { RoleSelector } from './components/RoleSelector';
+import {
+  NavigationTab,
+  ResumeData,
+  InterviewRole,
+  ExperienceLevel,
+  DifficultyLevel,
+  InterviewType,
+  InterviewQuestion,
+  AnswerEvaluation,
+  InterviewReport,
+  UserSettings,
+} from './types';
+import { Bot, Sparkles, Loader2 } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'setup' | 'interview' | 'report' | 'history'>('setup');
+  const [activeTab, setActiveTab] = useState<NavigationTab>('landing');
+  const [isOpenMobile, setIsOpenMobile] = useState(false);
+
+  // Default User Settings
+  const [settings, setSettings] = useState<UserSettings>({
+    defaultRole: 'Frontend',
+    defaultLevel: 'Mid-Level',
+    defaultDifficulty: 'Medium',
+    enableVoiceInterviewer: true,
+    enableVoiceInput: true,
+    theme: 'dark',
+  });
 
   // Candidate Setup State
   const [resumeData, setResumeData] = useState<ResumeData | null>(null);
   const [role, setRole] = useState<InterviewRole>('Frontend');
+  const [interviewType, setInterviewType] = useState<InterviewType>('Technical Interview');
   const [customRoleName, setCustomRoleName] = useState('');
-  const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel>('Mid-Level (3-5 yrs)');
-  const [interviewMode, setInterviewMode] = useState<InterviewMode>('Mixed');
+  const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel>('Mid-Level');
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>('Medium');
   const [questionCount, setQuestionCount] = useState<number>(5);
 
   // Active Interview Session State
@@ -30,25 +59,25 @@ export default function App() {
   const [activeReport, setActiveReport] = useState<InterviewReport | null>(null);
   const [history, setHistory] = useState<InterviewReport[]>([]);
 
-  // Load saved history on mount
+  // Load saved settings & history on mount
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('interview_coach_history');
-      if (saved) {
-        setHistory(JSON.parse(saved));
-      }
+      const savedHistory = localStorage.getItem('interview_coach_history');
+      if (savedHistory) setHistory(JSON.parse(savedHistory));
+
+      const savedSettings = localStorage.getItem('interview_coach_settings');
+      if (savedSettings) setSettings(JSON.parse(savedSettings));
     } catch (e) {
-      console.error('Failed to load interview history', e);
+      console.error('Failed to load local storage:', e);
     }
   }, []);
 
-  // Save history helper
   const saveHistory = (newHistory: InterviewReport[]) => {
     setHistory(newHistory);
     try {
       localStorage.setItem('interview_coach_history', JSON.stringify(newHistory));
     } catch (e) {
-      console.error('Failed to save interview history', e);
+      console.error('Failed to save history:', e);
     }
   };
 
@@ -60,26 +89,23 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          role,
-          customRole: customRoleName,
+          role: role === 'Custom' ? customRoleName || 'Software Engineer' : role,
           experienceLevel,
-          interviewMode,
+          difficulty,
+          interviewMode: interviewType,
           resumeText: resumeData?.text || '',
           count: questionCount,
         }),
       });
 
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to generate interview questions');
-      }
+      if (!response.ok) throw new Error(data.error || 'Failed to generate interview questions');
 
       setQuestions(data.questions || []);
       setCurrentQuestionIndex(0);
       setEvaluations([]);
       setIsGeneratingQuestions(false);
-      setActiveTab('interview');
+      setActiveTab('mock-interview');
     } catch (error: any) {
       console.error('Error starting interview:', error);
       alert(error.message || 'Error generating questions. Please try again.');
@@ -87,54 +113,49 @@ export default function App() {
     }
   };
 
-  // Handler: Finish Interview & Generate Comprehensive Report
+  // Handler: Finish Interview & Generate Final Bar Raiser Scorecard
   const handleFinishInterview = async () => {
     if (evaluations.length === 0) {
-      alert('Please answer at least one question to generate a report.');
+      alert('Please answer at least one question before completing.');
       return;
     }
 
     setIsCompilingReport(true);
-
     try {
       const response = await fetch('/api/interview/generate-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          role,
-          customRole: customRoleName,
+          role: role === 'Custom' ? customRoleName || 'Software Engineer' : role,
+          interviewType,
           experienceLevel,
-          interviewMode,
+          difficulty,
           evaluations,
           resumeFileName: resumeData?.fileName,
         }),
       });
 
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to generate final report');
-      }
+      if (!response.ok) throw new Error(data.error || 'Failed to generate report');
 
       const compiledReport: InterviewReport = data.report;
       setActiveReport(compiledReport);
 
-      // Add to history
-      const updatedHistory = [compiledReport, ...history];
-      saveHistory(updatedHistory);
+      const updated = [compiledReport, ...history];
+      saveHistory(updated);
 
       setIsCompilingReport(false);
-      setActiveTab('report');
+      setActiveTab('interview-reports');
     } catch (error: any) {
-      console.error('Error finishing interview:', error);
-      alert(error.message || 'Error compiling scorecard report.');
+      console.error('Error compiling report:', error);
+      alert(error.message || 'Error generating report.');
       setIsCompilingReport(false);
     }
   };
 
   const handleSelectHistoryReport = (rep: InterviewReport) => {
     setActiveReport(rep);
-    setActiveTab('report');
+    setActiveTab('interview-reports');
   };
 
   const handleDeleteHistoryReport = (id: string) => {
@@ -150,135 +171,139 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-slate-950 antialiased">
-      {/* Navigation Header */}
-      <Navbar
+      {/* Sidebar Navigation */}
+      <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        currentRole={role}
-        customRoleName={customRoleName}
-        experienceLevel={experienceLevel}
-        hasActiveInterview={questions.length > 0}
-        hasReport={activeReport !== null}
+        isOpenMobile={isOpenMobile}
+        setIsOpenMobile={setIsOpenMobile}
+        historyCount={history.length}
       />
 
       {/* Main Content Area */}
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-        {/* Loading overlay during report compilation */}
-        {isCompilingReport && (
-          <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-md">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 mb-4 animate-bounce">
-              <Bot className="h-8 w-8" />
-            </div>
-            <h2 className="text-xl font-bold text-white">Compiling Bar Raiser Scorecard...</h2>
-            <p className="text-xs text-slate-400 mt-1">Aggregating confidence, technical, and communication metrics...</p>
-          </div>
-        )}
-
-        {/* TAB 1: SETUP & ROLE SELECTOR */}
-        {activeTab === 'setup' && (
-          <div className="space-y-8 animate-in fade-in duration-300">
-            {/* Hero Banner */}
-            <div className="relative overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-r from-slate-900 via-slate-900/90 to-slate-950 p-6 sm:p-8 shadow-2xl">
-              <div className="absolute -top-24 -right-24 h-72 w-72 rounded-full bg-cyan-500/10 blur-3xl pointer-events-none"></div>
-              <div className="absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-violet-500/10 blur-3xl pointer-events-none"></div>
-
-              <div className="relative z-10 max-w-3xl space-y-3">
-                <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-300">
-                  <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
-                  <span>Powered by Gemini 3.6 Flash Intelligence</span>
-                </div>
-
-                <h1 className="text-2xl sm:text-4xl font-black tracking-tight text-white leading-tight">
-                  Master Your Technical Interviews with Real-time AI Coaching
-                </h1>
-
-                <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                  Upload your resume, select your target role (Frontend, AI Engineer, Data Analyst, Software Engineer), and practice realistic mock interview questions with instant multi-metric feedback & scorecards.
-                </p>
-
-                {/* Feature Pills */}
-                <div className="pt-2 flex flex-wrap gap-2 text-xs font-medium text-slate-300">
-                  <span className="flex items-center gap-1.5 rounded-lg bg-slate-900/80 px-2.5 py-1 border border-slate-800">
-                    <CheckCircle className="h-3.5 w-3.5 text-cyan-400" /> Resume Analysis
-                  </span>
-                  <span className="flex items-center gap-1.5 rounded-lg bg-slate-900/80 px-2.5 py-1 border border-slate-800">
-                    <CheckCircle className="h-3.5 w-3.5 text-cyan-400" /> Multi-Score Metrics
-                  </span>
-                  <span className="flex items-center gap-1.5 rounded-lg bg-slate-900/80 px-2.5 py-1 border border-slate-800">
-                    <CheckCircle className="h-3.5 w-3.5 text-cyan-400" /> Voice & Text Input
-                  </span>
-                  <span className="flex items-center gap-1.5 rounded-lg bg-slate-900/80 px-2.5 py-1 border border-slate-800">
-                    <CheckCircle className="h-3.5 w-3.5 text-cyan-400" /> Personalized Action Plan
-                  </span>
-                </div>
+      <div className="lg:pl-64 min-h-screen flex flex-col">
+        <main className="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto">
+          {/* Loading Overlay */}
+          {isCompilingReport && (
+            <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-md">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 mb-4 animate-bounce">
+                <Bot className="h-8 w-8" />
               </div>
+              <h2 className="text-xl font-bold text-white">Compiling Bar Raiser Scorecard...</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Aggregating confidence, technical accuracy, and communication metrics...
+              </p>
             </div>
+          )}
 
-            {/* Resume Upload Section */}
-            <ResumeUploader resumeData={resumeData} setResumeData={setResumeData} />
+          {/* TAB 1: LANDING OVERVIEW */}
+          {activeTab === 'landing' && <LandingPage setActiveTab={setActiveTab} />}
 
-            {/* Role & Settings Selector */}
-            <RoleSelector
-              role={role}
-              setRole={setRole}
-              customRoleName={customRoleName}
-              setCustomRoleName={setCustomRoleName}
-              experienceLevel={experienceLevel}
-              setExperienceLevel={setExperienceLevel}
-              interviewMode={interviewMode}
-              setInterviewMode={setInterviewMode}
-              questionCount={questionCount}
-              setQuestionCount={setQuestionCount}
-              onStartInterview={handleStartInterview}
-              isGenerating={isGeneratingQuestions}
-              hasResume={Boolean(resumeData)}
-            />
-          </div>
-        )}
-
-        {/* TAB 2: LIVE MOCK INTERVIEW */}
-        {activeTab === 'interview' && (
-          <div className="animate-in fade-in duration-300">
-            <MockInterview
-              questions={questions}
-              currentQuestionIndex={currentQuestionIndex}
-              setCurrentQuestionIndex={setCurrentQuestionIndex}
-              evaluations={evaluations}
-              setEvaluations={setEvaluations}
-              role={role}
-              customRoleName={customRoleName}
-              experienceLevel={experienceLevel}
-              resumeText={resumeData?.text}
-              onFinishInterview={handleFinishInterview}
-            />
-          </div>
-        )}
-
-        {/* TAB 3: SCORECARD & REPORT */}
-        {activeTab === 'report' && activeReport && (
-          <div className="animate-in fade-in duration-300">
-            <ReportView
-              report={activeReport}
-              onNewInterview={() => {
-                setActiveTab('setup');
-              }}
-            />
-          </div>
-        )}
-
-        {/* TAB 4: HISTORY */}
-        {activeTab === 'history' && (
-          <div className="animate-in fade-in duration-300">
-            <HistoryView
+          {/* TAB 2: DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <DashboardView
               history={history}
+              setActiveTab={setActiveTab}
               onSelectReport={handleSelectHistoryReport}
-              onClearHistory={handleClearHistory}
-              onDeleteReport={handleDeleteHistoryReport}
-              onNewInterview={() => setActiveTab('setup')}
             />
-          </div>
-        )}
-      </main>
+          )}
+
+          {/* TAB 3: MOCK INTERVIEW */}
+          {activeTab === 'mock-interview' && (
+            <div className="space-y-8 animate-in fade-in duration-300">
+              {questions.length === 0 || isGeneratingQuestions ? (
+                <div className="space-y-6">
+                  <div>
+                    <h1 className="text-2xl font-black text-white">Configure Your Mock Session</h1>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Select your target role, experience level, difficulty, and question length to launch your session.
+                    </p>
+                  </div>
+
+                  <RoleSelector
+                    role={role}
+                    setRole={setRole}
+                    customRoleName={customRoleName}
+                    setCustomRoleName={setCustomRoleName}
+                    experienceLevel={experienceLevel}
+                    setExperienceLevel={setExperienceLevel}
+                    interviewMode={interviewType as any}
+                    setInterviewMode={setInterviewType as any}
+                    questionCount={questionCount}
+                    setQuestionCount={setQuestionCount}
+                    onStartInterview={handleStartInterview}
+                    isGenerating={isGeneratingQuestions}
+                    hasResume={Boolean(resumeData)}
+                  />
+                </div>
+              ) : (
+                <MockInterview
+                  questions={questions}
+                  currentQuestionIndex={currentQuestionIndex}
+                  setCurrentQuestionIndex={setCurrentQuestionIndex}
+                  evaluations={evaluations}
+                  setEvaluations={setEvaluations}
+                  role={role}
+                  customRoleName={customRoleName}
+                  experienceLevel={experienceLevel}
+                  resumeText={resumeData?.text}
+                  onFinishInterview={handleFinishInterview}
+                />
+              )}
+            </div>
+          )}
+
+          {/* TAB 4: RESUME ANALYSIS */}
+          {activeTab === 'resume-analysis' && (
+            <ResumeAnalysisView
+              resumeData={resumeData}
+              setResumeData={setResumeData}
+              setActiveTab={setActiveTab}
+            />
+          )}
+
+          {/* TAB 5: ATS CHECKER */}
+          {activeTab === 'ats-checker' && <AtsCheckerView resumeData={resumeData} />}
+
+          {/* TAB 6: QUESTION BANK */}
+          {activeTab === 'question-bank' && <QuestionBankView setActiveTab={setActiveTab} />}
+
+          {/* TAB 7: INTERVIEW REPORTS */}
+          {activeTab === 'interview-reports' && (
+            <div className="space-y-6 animate-in fade-in duration-300">
+              {activeReport ? (
+                <ReportView report={activeReport} onNewInterview={() => setActiveTab('mock-interview')} />
+              ) : (
+                <HistoryView
+                  history={history}
+                  onSelectReport={handleSelectHistoryReport}
+                  onClearHistory={handleClearHistory}
+                  onDeleteReport={handleDeleteHistoryReport}
+                  onNewInterview={() => setActiveTab('mock-interview')}
+                />
+              )}
+            </div>
+          )}
+
+          {/* TAB 8: PROGRESS TRACKER */}
+          {activeTab === 'progress-tracker' && (
+            <ProgressTrackerView
+              history={history}
+              setActiveTab={setActiveTab}
+              onSelectReport={handleSelectHistoryReport}
+            />
+          )}
+
+          {/* TAB 9: SETTINGS */}
+          {activeTab === 'settings' && (
+            <SettingsView
+              settings={settings}
+              setSettings={setSettings}
+              onClearHistory={handleClearHistory}
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
