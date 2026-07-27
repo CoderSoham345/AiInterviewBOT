@@ -1,0 +1,6 @@
+{
+  "name": "AI Interview Coach",
+  "description": "AI-powered mock interview practice platform with resume analysis, instant feedback, scoring, and personalized improvement plans.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
